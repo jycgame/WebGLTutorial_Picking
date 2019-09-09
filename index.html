@@ -1,0 +1,352 @@
+<!-- <!doctype html> -->
+<html>
+   <body>
+      <canvas width="400" height="400" id = "my_Canvas"></canvas>
+      <script src="script/gl-matrix/gl-matrix.js"></script>
+      <script src="script/boudingSphere.js"></script>
+      <script src="script/ray.js"></script>
+      <script src="script/vertexReorganizer.js"></script>
+
+      <script>
+         var canvas = document.getElementById('my_Canvas');
+         var gl = canvas.getContext("experimental-webgl");
+
+         // input detect
+         var keyStatus = [];
+         document.addEventListener('keydown', event => {
+           const key = event.key.toLowerCase();
+           console.log(key);
+           keyStatus[key] = true;
+         });
+   
+         document.addEventListener('keyup', event => {
+           const key = event.key.toLowerCase();
+           console.log(key);
+           if (keyStatus[key] != null) keyStatus[key] = false;
+         });
+
+         function getKeyDown(key) {
+            if (keyStatus[key]) return true;
+            return false;
+         }
+   
+         var vertices;
+         var uvs;
+         var indices;
+         var texture;
+         var modelLoaded = false;
+         var textureLoaded = false;
+         var timeElapse = 0;
+         var deltaZ = 1;
+         var modelTransform, viewTransform, projectionTransform;
+         var angle = 0;
+         var modelPositon = glMatrix.vec3.fromValues(10, 5, 0);
+         var bounding = new boundingSphere(modelPositon, 3);
+
+         //model transform
+         modelTransform = glMatrix.mat4.create();
+         glMatrix.mat4.fromTranslation(modelTransform, modelPositon);
+
+         //view transform matrix
+         viewTransform = glMatrix.mat4.create();
+
+         var cameraPos = glMatrix.vec3.fromValues(0, 0, 100);
+         var focalPoint = glMatrix.vec3.fromValues(0, 0, 0);
+         var up = glMatrix.vec3.fromValues(0, 1, 0);
+
+         glMatrix.mat4.lookAt(viewTransform, cameraPos, focalPoint, up);
+
+         //projection transform
+         projectionTransform = glMatrix.mat4.create();
+         glMatrix.mat4.perspective(projectionTransform, glMatrix.glMatrix.toRadian(15), 1, 0.01, 100);
+
+         canvas.addEventListener('mousedown', event => {
+            if (event.button == 0) {
+               // console.log('left mouse down');
+            }
+         });
+
+         canvas.addEventListener('mouseup', event => {
+            if (event.button == 0) {
+               // console.log("coord: " + event.offsetX + ", " + event.offsetY);
+               // console.log('left mouse up');
+
+               //from screenX screenY, get a ray
+               // Step 1:
+               var x = (2.0 * event.offsetX) / 400 - 1.0;
+               var y = 1.0 - (2.0 * event.offsetY) / 400;
+               var z = 1.0;
+               var vec = glMatrix.vec3.fromValues(x, y, z);
+
+               // Step 3:
+               vec = glMatrix.vec4.fromValues(x, y, -1, 0);
+
+               // Step 4: 
+               var projectionTransformInver = glMatrix.mat4.create();
+               glMatrix.mat4.invert(projectionTransformInver, projectionTransform);
+               glMatrix.vec4.transformMat4(vec, vec, projectionTransformInver);
+
+               // Step 5:
+               vec[2] = -1; vec[3] = 0;
+               var viewTransformInver = glMatrix.mat4.create();
+               glMatrix.mat4.invert(viewTransformInver, viewTransform);
+               glMatrix.vec4.transformMat4(vec, vec, viewTransformInver);
+
+               // Step 6:
+               vec = glMatrix.vec3.fromValues(vec[0], vec[1], vec[2]);
+               glMatrix.vec3.normalize(vec, vec);
+               // construct a ray
+               var r = new ray(cameraPos, vec);
+               var result = r.intersectSphere(bounding.center, bounding.radius);
+               console.log("result = " + result);
+            }
+         });
+   
+         function processInput() {
+
+         }
+    
+         function clearCanvas(r, g, b, a) {
+            gl.clearColor(49/255, 77/255, 121/255, 1);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+         }
+   
+         function render() {
+            clearCanvas();
+    
+            gl.viewport(0,0,canvas.width,canvas.height);
+            gl.enable(gl.CULL_FACE);
+            gl.cullFace(gl.BACK);
+             
+            //如果模型的顶点准备完毕，我们就可以渲染了
+            if (modelLoaded && textureLoaded) {
+               var vertShader = gl.createShader(gl.VERTEX_SHADER);
+               gl.shaderSource(vertShader, vertCode);
+               gl.compileShader(vertShader);
+               var fragShader = gl.createShader(gl.FRAGMENT_SHADER);
+               gl.shaderSource(fragShader, fragCode);
+               gl.compileShader(fragShader);
+               var shaderProgram = gl.createProgram();
+               gl.attachShader(shaderProgram, vertShader); 
+               gl.attachShader(shaderProgram, fragShader);
+               gl.linkProgram(shaderProgram);
+               gl.useProgram(shaderProgram);
+       
+               //顶点数据（CPU到GPU）
+               var vertex_buffer = gl.createBuffer();
+               gl.bindBuffer(gl.ARRAY_BUFFER, vertex_buffer);
+               gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+               var coord = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+               gl.vertexAttribPointer(coord, 3, gl.FLOAT, false, 0, 0);
+               gl.enableVertexAttribArray(coord);
+   
+               //贴图uv数据 (顶点属性之一)
+               var textureCoordBuffer = gl.createBuffer();
+               gl.bindBuffer(gl.ARRAY_BUFFER, textureCoordBuffer);
+               gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(uvs), gl.STATIC_DRAW);
+               var uv = gl.getAttribLocation(shaderProgram, "aTextureCoord");
+               gl.vertexAttribPointer(uv, 2, gl.FLOAT, false, 0, 0);
+               gl.enableVertexAttribArray(uv);
+    
+               //索引数据（CPU到GPU）
+               var index_buffer = gl.createBuffer ();
+               gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index_buffer);
+               gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+   
+               //实际贴图数据
+               gl.activeTexture(gl.TEXTURE0);
+               gl.bindTexture(gl.TEXTURE_2D, texture);
+               var uSampler = gl.getUniformLocation(shaderProgram, 'uSampler');
+               gl.uniform1i(uSampler, 0);
+   
+               //矩阵传入GPU
+               //世界矩阵
+               var mt = gl.getUniformLocation(shaderProgram, "modelTransform");
+
+               //view矩阵
+               var vt = gl.getUniformLocation(shaderProgram, "viewTransform");
+               gl.uniformMatrix4fv(vt, false, viewTransform);
+
+               //投影矩阵
+               var pt = gl.getUniformLocation(shaderProgram, "projectionTransform");
+               gl.uniformMatrix4fv(pt, false, projectionTransform);
+   
+               //Call draw
+               gl.uniformMatrix4fv(mt, false, modelTransform);
+               gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+
+               //disable
+               gl.disableVertexAttribArray(uv);
+               gl.disableVertexAttribArray(coord);
+
+               //这样就可以看到最后的渲染
+            }
+         }
+   
+         function sceneUpdate(timestamp) {
+            angle = 1;
+            glMatrix.mat4.rotateY(modelTransform, modelTransform, glMatrix.glMatrix.toRadian(angle));
+         }
+   
+         function frameUpdate(timestamp) {
+            //process input
+            processInput();
+   
+            //logic upate
+            sceneUpdate(timestamp);
+   
+            //render
+            render();
+   
+            //schedule the next frame
+            requestAnimationFrame(frameUpdate);
+         }
+    
+         function loadVerticesFromFile(path) {
+            let xmlHttpRequest = new XMLHttpRequest();
+            xmlHttpRequest.onreadystatechange = function() {
+               if (xmlHttpRequest.status == 200 && xmlHttpRequest.readyState == 4) {
+                  var txt = xmlHttpRequest.responseText;
+    
+                  var lines = txt.split('\n');
+    
+                  //ignore lines not contain vertices
+                  var index = 0;
+                  while(lines[index].indexOf('v ') == -1) {
+                     index++;
+                  }
+    
+                  //1， 读取顶点数据
+                  vertices = [];
+                  while(lines[index].indexOf('v ') == 0) {
+                     //这里是每一个顶点数据
+                     var str = lines[index];
+                     var values = str.split(' ');
+                      
+                     vertices.push(parseFloat(values[1]));
+                     vertices.push(parseFloat(values[2]));
+                     vertices.push(parseFloat(values[3]));
+   
+                     index++;
+                  }
+   
+                  //2，读取uv数据
+                  uvs = [];
+                  while(lines[index].indexOf('vt ') == 0) {
+                     var str = lines[index];
+                     var values = str.split(' ');
+   
+                     uvs.push(parseFloat(values[1]));
+                     uvs.push(parseFloat(values[2]));
+                     index++;
+                  }
+   
+                  //3，处理法线数据
+                  var normals = [];
+                  while(lines[index].indexOf('vn ') == 0) {
+                     var str = lines[index];
+                     var values = str.split(' ');
+   
+                     normals.push(parseFloat(values[1]));
+                     normals.push(parseFloat(values[2]));
+                     normals.push(parseFloat(values[3]));
+                     index++;
+                  }
+    
+                  while(lines[index].indexOf('f ') == -1) {
+                     index++;
+                  }
+                   
+                  //3，处理顶点索引：位置和UV，法线
+                  while(lines[index].indexOf('f ') == 0) {
+                     var line = lines[index];
+                     var values = line.split(' ');
+    
+                     if (values.length == 5) {
+                        // first vertex
+                        extractAndProcessVertex(vertices, uvs, normals, values[1]);
+                        // second vertex
+                        extractAndProcessVertex(vertices, uvs, normals, values[2]);
+                        // third vertex
+                        extractAndProcessVertex(vertices, uvs, normals, values[3]);
+   
+                        //第二个三角形
+                        // 1st vertex
+                        extractAndProcessVertex(vertices, uvs, normals, values[1]);
+                        // 2nd vertex
+                        extractAndProcessVertex(vertices, uvs, normals, values[3]);
+                        // 3rd vertex
+                        extractAndProcessVertex(vertices, uvs, normals, values[4]); 
+                     }
+                     else if(values.length == 4) {
+                        // first vertex
+                        extractAndProcessVertex(vertices, uvs, normals, values[1]);
+                        // second vertex
+                        extractAndProcessVertex(vertices, uvs, normals, values[2]);  
+                        // third vertex
+                        extractAndProcessVertex(vertices, uvs, normals, values[3]);
+                     }
+                     else {
+                        console.log("Impossible!");
+                     }
+    
+                     index++;
+                  }
+    
+                  vertices = getPositionArray();
+                  uvs = getUvArray();
+                  indices = getIndexArray();
+
+                  modelLoaded = true;
+               }
+            
+            }
+            xmlHttpRequest.open("GET", path);
+            xmlHttpRequest.send();         
+         }
+   
+         function loadTexture(path) {
+            const image = new Image();
+            image.onload = function() {
+               texture = gl.createTexture();
+               gl.bindTexture(gl.TEXTURE_2D, texture);
+               gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+               gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+               gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+               gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+               gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+               textureLoaded = true;
+            }
+            image.src = path;
+         }
+   
+         loadVerticesFromFile("./model/sphere3x.obj");
+   
+         // load texture from disk
+         loadTexture("./texture/uv.jpg");
+   
+         var version = gl.getParameter(gl.VERSION);
+    
+         var vertCode =
+            'attribute vec3 aVertexPosition;' + 
+            'attribute vec2 aTextureCoord; ' + 
+            'varying highp vec2 vTextureCoord; ' +
+            'uniform mat4 modelTransform;' +
+            'uniform mat4 viewTransform;' +
+            'uniform mat4 projectionTransform;' +
+            'void main(void) {' + 
+            ' gl_Position = projectionTransform * viewTransform * modelTransform * vec4(aVertexPosition, 1.0);' + 
+            ' vTextureCoord = aTextureCoord; ' + 
+            '}';
+   
+         var fragCode = 
+         'varying highp vec2 vTextureCoord; ' +
+         'uniform sampler2D uSampler; ' + 
+         'void main(void) {' + 
+         ' gl_FragColor = texture2D(uSampler, vTextureCoord); ' + 
+         '}';
+    
+         requestAnimationFrame(frameUpdate);
+     </script>
+   </body>
+</html>
